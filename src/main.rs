@@ -8,7 +8,7 @@ use tao::{
     keyboard::{KeyCode, ModifiersState},
     window::{Fullscreen, WindowBuilder},
 };
-use wry::{http, WebViewBuilder};
+use wry::{http, NewWindowResponse, WebViewBuilder};
 
 #[cfg(target_os = "linux")]
 use gtk::prelude::*;
@@ -17,9 +17,12 @@ use tao::platform::unix::WindowExtUnix;
 #[cfg(target_os = "linux")]
 use wry::WebViewBuilderExtUnix;
 
+const START_URL: &str = "focus://localhost/index.html";
+
 #[derive(Debug, Clone)]
 pub enum UserEvent {
     Navigate(String),
+    Zoom(String),
     ToggleFullscreen,
     Close,
 }
@@ -40,6 +43,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build(&event_loop)?;
 
     let proxy = event_loop.create_proxy();
+    let new_window_proxy = event_loop.create_proxy();
+
+    let blocklist = url::load_blocklist();
+    let nav_blocklist = blocklist.clone();
+
+    let start_url = std::env::args()
+        .nth(1)
+        .map(|arg| url::normalize_url(&arg))
+        .filter(|u| !url::is_blocked(u, &blocklist))
+        .unwrap_or_else(|| START_URL.to_string());
 
     let webview_builder = WebViewBuilder::new()
         .with_custom_protocol("focus".to_string(), |_id, _req| {
@@ -50,14 +63,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ))
                 .unwrap()
         })
-        .with_url("focus://localhost/index.html")
+        .with_url(&start_url)
         .with_initialization_script(ui::INIT_SCRIPT)
         .with_focused(true)
         .with_devtools(true)
+        // Silently drops links, redirects and iframes to blocked sites.
+        .with_navigation_handler(move |uri| !url::is_blocked(&uri, &nav_blocklist))
+        // ponytail: target=_blank and window.open load in the same view; popup flows
+        // relying on window.opener (some OAuth logins) break. Add a real popup window if needed.
+        .with_new_window_req_handler(move |uri, _features| {
+            if !uri.is_empty() && uri != "about:blank" {
+                let _ = new_window_proxy.send_event(UserEvent::Navigate(uri));
+            }
+            NewWindowResponse::Deny
+        })
         .with_ipc_handler(move |request: http::Request<String>| {
             let body = request.body();
             if let Some(url_str) = body.strip_prefix("navigate:") {
                 let _ = proxy.send_event(UserEvent::Navigate(url_str.to_string()));
+            } else if let Some(dir) = body.strip_prefix("zoom:") {
+                let _ = proxy.send_event(UserEvent::Zoom(dir.to_string()));
             } else if body == "toggle_fullscreen" {
                 let _ = proxy.send_event(UserEvent::ToggleFullscreen);
             } else if body == "close" {
@@ -79,6 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let webview = webview_builder.build(&window)?;
 
     let mut modifiers = ModifiersState::empty();
+    let mut zoom = 1.0_f64;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -87,9 +113,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             Event::UserEvent(user_event) => match user_event {
                 UserEvent::Navigate(raw_url) => {
                     let formatted_url = url::normalize_url(&raw_url);
-                    if let Err(e) = webview.load_url(&formatted_url) {
+                    let result = if url::is_blocked(&formatted_url, &blocklist) {
+                        webview.load_html(&ui::blocked_page_html(&formatted_url))
+                    } else {
+                        webview.load_url(&formatted_url)
+                    };
+                    if let Err(e) = result {
                         eprintln!("Failed to load url {}: {:?}", formatted_url, e);
                     }
+                }
+                UserEvent::Zoom(dir) => {
+                    zoom = match dir.as_str() {
+                        "in" => (zoom + 0.1).min(3.0),
+                        "out" => (zoom - 0.1).max(0.3),
+                        _ => 1.0,
+                    };
+                    let _ = webview.zoom(zoom);
                 }
                 UserEvent::ToggleFullscreen => {
                     let is_fullscreen = window.fullscreen().is_some();

@@ -59,6 +59,12 @@ pub const START_PAGE_HTML: &str = r#"<!DOCTYPE html>
       color: #f4f4f5;
       transform: translateY(-1px);
     }
+    .shortcuts {
+      font-size: 0.8rem;
+      color: #52525b;
+      line-height: 2;
+    }
+    .shortcuts kbd { font-size: 0.7rem; padding: 0.1rem 0.35rem; }
     kbd {
       background: #27272a;
       border: 1px solid #3f3f46;
@@ -77,6 +83,12 @@ pub const START_PAGE_HTML: &str = r#"<!DOCTYPE html>
     <div class="clock" id="clock">00:00</div>
     <div class="hint-card" onclick="window.__focusBrowserToggle && window.__focusBrowserToggle()">
       <span>Press <kbd>Ctrl</kbd> + <kbd>G</kbd> to go to URL</span>
+    </div>
+    <div class="shortcuts">
+      <kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> back/forward &nbsp;·&nbsp;
+      <kbd>Ctrl</kbd>+<kbd>R</kbd> reload &nbsp;·&nbsp;
+      <kbd>Ctrl</kbd>+<kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> zoom &nbsp;·&nbsp;
+      <kbd>Ctrl</kbd>+<kbd>Q</kbd> quit
     </div>
   </div>
   <script>
@@ -334,10 +346,44 @@ pub const INIT_SCRIPT: &str = r#"
       e.preventDefault();
       e.stopPropagation();
       postIpc('toggle_fullscreen');
+    } else if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.key === 'ArrowLeft' ? history.back() : history.forward();
+    } else if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.code === 'KeyR'))) {
+      e.preventDefault();
+      e.stopPropagation();
+      location.reload();
+    } else if ((e.ctrlKey || e.metaKey) && e.code === 'KeyQ') {
+      e.preventDefault();
+      e.stopPropagation();
+      postIpc('close');
+    } else if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '0')) {
+      e.preventDefault();
+      e.stopPropagation();
+      postIpc('zoom:' + (e.key === '-' ? 'out' : e.key === '0' ? 'reset' : 'in'));
     }
+  }, true);
+
+  // Mouse side buttons: back / forward
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 3) { e.preventDefault(); history.back(); }
+    else if (e.button === 4) { e.preventDefault(); history.forward(); }
   }, true);
 })();
 "#;
+
+/// Shown instead of a blocked site. Reuses the start page styling.
+pub fn blocked_page_html(url: &str) -> String {
+    let safe = url
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+    START_PAGE_HTML
+        .replace(r#"<div class="clock" id="clock">00:00</div>"#, r#"<div class="clock">Blocked</div>"#)
+        .replace("Press <kbd>Ctrl</kbd> + <kbd>G</kbd> to go to URL", &safe)
+}
 
 pub fn get_start_page_html() -> String {
     START_PAGE_HTML.replace(

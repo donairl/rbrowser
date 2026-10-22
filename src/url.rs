@@ -45,9 +45,51 @@ pub fn normalize_url(input: &str) -> String {
     format!("https://duckduckgo.com/?q={encoded_query}")
 }
 
+/// Domains from `$XDG_CONFIG_HOME/rbrowser/blocklist.txt` (or `~/.config/...`),
+/// one per line, `#` for comments. Missing file means nothing is blocked.
+pub fn load_blocklist() -> Vec<String> {
+    let dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")));
+    let Some(path) = dir.map(|d| d.join("rbrowser/blocklist.txt")) else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().trim_start_matches("www.").to_lowercase())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
+/// True if the URL's host is a blocked domain or one of its subdomains.
+pub fn is_blocked(url: &str, blocklist: &[String]) -> bool {
+    let Some(host) = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_lowercase))
+    else {
+        return false;
+    };
+    blocklist
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_blocklist() {
+        let list = vec!["youtube.com".to_string(), "x.com".to_string()];
+        assert!(is_blocked("https://youtube.com/watch?v=1", &list));
+        assert!(is_blocked("https://www.youtube.com", &list));
+        assert!(is_blocked("https://m.YouTube.com", &list));
+        assert!(!is_blocked("https://notyoutube.com", &list));
+        assert!(!is_blocked("https://box.com", &list));
+        assert!(!is_blocked("about:blank", &list));
+        assert!(!is_blocked("focus://localhost/index.html", &list));
+    }
 
     #[test]
     fn test_empty_input() {
