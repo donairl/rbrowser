@@ -15,7 +15,7 @@ use gtk::prelude::*;
 #[cfg(target_os = "linux")]
 use tao::platform::unix::WindowExtUnix;
 #[cfg(target_os = "linux")]
-use wry::WebViewBuilderExtUnix;
+use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
 const START_URL: &str = "focus://localhost/index.html";
 
@@ -25,6 +25,21 @@ pub enum UserEvent {
     Zoom(String),
     ToggleFullscreen,
     Close,
+}
+
+/// WebKit aborts the page process (frozen, unclickable page) when media starts
+/// without gst-plugins-good's autoaudiosink, which lives in libgstautodetect.so.
+// ponytail: checks common plugin dirs, not the GStreamer registry; unusual layouts
+// count as missing and only lose video/audio.
+#[cfg(target_os = "linux")]
+fn has_autoaudiosink() -> bool {
+    let triplet = format!("/usr/lib/{}-linux-gnu/gstreamer-1.0", std::env::consts::ARCH);
+    ["GST_PLUGIN_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .flat_map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
+        .chain(["/usr/lib/gstreamer-1.0", "/usr/lib64/gstreamer-1.0", &triplet].map(Into::into))
+        .any(|dir| dir.join("libgstautodetect.so").exists())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -63,7 +78,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ))
                 .unwrap()
         })
-        .with_url(&start_url)
         .with_initialization_script(ui::INIT_SCRIPT)
         .with_focused(true)
         .with_devtools(true)
@@ -94,6 +108,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let webview = {
         let vbox = window.default_vbox().expect("default_vbox");
         let wv = webview_builder.build_gtk(vbox)?;
+        if !has_autoaudiosink() {
+            use webkit2gtk::{SettingsExt, WebViewExt};
+            eprintln!("gst-plugins-good not found: video/audio disabled");
+            if let Some(s) = WebViewExt::settings(&wv.webview()) {
+                // Media alone is not enough: MSE/EME/capability probes still build GStreamer pipelines.
+                s.set_enable_media(false);
+                s.set_enable_webaudio(false);
+                s.set_enable_mediasource(false);
+                s.set_enable_encrypted_media(false);
+                s.set_enable_media_capabilities(false);
+                s.set_enable_media_stream(false);
+                s.set_enable_webrtc(false);
+            }
+        }
         vbox.show_all();
         window.gtk_window().show_all();
         let _ = wv.focus();
@@ -102,6 +130,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     #[cfg(not(target_os = "linux"))]
     let webview = webview_builder.build(&window)?;
+
+    // Loaded after build so the media settings above apply from the first page.
+    webview.load_url(&start_url)?;
 
     let mut modifiers = ModifiersState::empty();
     let mut zoom = 1.0_f64;

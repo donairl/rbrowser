@@ -1592,6 +1592,7 @@ dependencies = [
  "gtk",
  "tao",
  "url",
+ "webkit2gtk",
  "wry",
 ]
 

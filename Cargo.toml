@@ -10,3 +10,4 @@ url = "2.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+webkit2gtk = "=2.0.2"
